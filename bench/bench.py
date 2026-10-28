@@ -2,8 +2,9 @@
 
 Each workload runs in a fresh database under ``--dir`` (a temporary directory
 by default, which on some systems is a RAM-backed tmpfs where fsync is free;
-pass a directory on a real disk to measure durable writes). Results are
-printed as a Markdown table.
+pass a directory on a real disk to measure durable writes). The whole set runs
+``--repeat`` times and the median time of each workload is reported, as a
+Markdown table.
 
     python bench/bench.py --dir /path/on/disk --count 100000
 """
@@ -15,6 +16,7 @@ import os
 import platform
 import random
 import shutil
+import statistics
 import sys
 import tempfile
 import time
@@ -125,19 +127,28 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--count", type=int, default=100_000, help="operations per workload")
     parser.add_argument("--value-size", type=int, default=100, help="value size in bytes")
     parser.add_argument("--sync-count", type=int, default=2000, help="writes in the fsync run")
+    parser.add_argument("--repeat", type=int, default=3, help="runs to take the median of")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args(argv)
 
-    directory = tempfile.mkdtemp(prefix="lsm-kv-bench-", dir=args.dir)
-    try:
-        results = run(directory, args.count, args.value_size, args.sync_count, args.seed)
-    finally:
-        shutil.rmtree(directory)
+    runs = []
+    for _ in range(args.repeat):
+        directory = tempfile.mkdtemp(prefix="lsm-kv-bench-", dir=args.dir)
+        try:
+            runs.append(run(directory, args.count, args.value_size, args.sync_count, args.seed))
+        finally:
+            shutil.rmtree(directory)
+    results = []
+    for column in zip(*runs, strict=True):
+        first = column[0]  # the workloads are seeded, so names, counts and notes agree
+        seconds = statistics.median(r.seconds for r in column)
+        results.append(Result(first.name, first.ops, seconds, first.note))
 
     print(
         f"Python {platform.python_version()}, {platform.system()} {platform.machine()}, "
         f"{os.cpu_count()} CPUs. {args.count} operations per workload, 16-byte keys, "
-        f"{args.value_size}-byte values, default Options except the sync policy.\n"
+        f"{args.value_size}-byte values, default Options except the sync policy. "
+        f"Median of {args.repeat} runs.\n"
     )
     print("| Workload | Operations | Seconds | Ops/s | Notes |")
     print("| --- | ---: | ---: | ---: | --- |")
