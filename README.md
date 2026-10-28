@@ -274,7 +274,7 @@ the code.
 
 ## Performance
 
-Measured on one laptop (Linux under WSL2, databases on ext4) with:
+Measured on one machine (Linux under WSL2, databases on ext4) with:
 
 ```bash
 python bench/bench.py --dir <a directory on disk> --count 200000
