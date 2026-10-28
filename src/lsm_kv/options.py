@@ -30,8 +30,8 @@ class SyncPolicy(enum.Enum):
         The log is fsynced only by ``sync`` and ``close``. A power failure can
         lose every write since the last of those.
 
-    Under every policy a flush also makes all earlier writes durable, because
-    the table it writes is fsynced before the log it replaces is retired.
+    Under every policy a flush also makes all earlier writes durable: it
+    fsyncs the log it retires and the table that replaces it.
 
     Under all three policies the state recovered after a crash is the result of
     a prefix of the acknowledged writes: a batch is applied entirely or not at

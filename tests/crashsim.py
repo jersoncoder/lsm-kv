@@ -156,73 +156,64 @@ class Recorder:
         """Directory contents after a power failure before operation ``k``.
 
         ``persisted`` selects, by position, which of the directory operations
-        issued since the last directory fsync reached the disk anyway (see
-        :meth:`pending_directory_ops`). ``keep`` maps a file name to a number
-        of unsynced bytes that reached the disk.
+        issued since the last directory fsync reached the disk anyway.
+        ``keep`` maps a file name (as of operation ``k``) to a number of its
+        unsynced bytes that reached the disk.
         """
-        # Model inodes so that a rename carries a file's synced state with it.
-        contents: dict[int, bytes] = {}
-        synced: dict[int, int] = {}
-        names: dict[str, int] = {}
-        for inode, (name, data) in enumerate(self.base.items()):
-            contents[inode], synced[inode], names[name] = data, len(data), inode
-        durable = dict(names)
-        pending: list[tuple[str, str, str, int]] = []  # kind, name, target, inode
-        for op in self.ops[:k]:
-            if op.kind == "create":
-                inode = len(contents)
-                contents[inode], synced[inode] = b"", 0
-                names[op.name] = inode
-                pending.append(("create", op.name, "", inode))
-            elif op.kind == "write":
-                contents[names[op.name]] += op.data
-            elif op.kind == "fsync":
-                synced[names[op.name]] = len(contents[names[op.name]])
-            elif op.kind == "fsync_dir":
-                durable = dict(names)
-                pending = []
-            elif op.kind == "rename":
-                inode = names.pop(op.name)
-                names[op.target] = inode
-                pending.append(("rename", op.name, op.target, inode))
-            elif op.kind == "remove":
-                pending.append(("remove", op.name, "", names.pop(op.name)))
-            elif op.kind == "truncate":  # fileops.truncate fsyncs
-                inode = names[op.name]
-                contents[inode] = contents[inode][: op.size]
-                synced[inode] = op.size
-        for position in sorted(persisted):
-            kind, name, target, inode = pending[position]
-            if kind == "create":
-                durable[name] = inode
-            elif kind == "rename":
-                durable.pop(name, None)
-                durable[target] = inode
-            else:
-                durable.pop(name, None)
-        keep = keep or {}
-        return {
-            name: contents[inode][: synced[inode] + keep.get(name, 0)]
-            for name, inode in durable.items()
-        }
-
-    def pending_directory_ops(self, k: int) -> int:
-        """Directory operations issued since the last directory fsync before ``k``."""
-        count = 0
-        for op in self.ops[:k]:
-            if op.kind == "fsync_dir":
-                count = 0
-            elif op.kind in ("create", "rename", "remove"):
-                count += 1
-        return count
+        disk = self._replay(k)
+        by_inode = {disk.names[name]: n for name, n in (keep or {}).items()}
+        return disk.state(persisted, by_inode)
 
     def power_failures(self, k: int) -> Iterator[dict[str, bytes]]:
-        """Every power failure state before ``k``: each subset of pending directory ops."""
-        pending = self.pending_directory_ops(k)
-        assert pending <= 8, "too many unsynced directory operations to enumerate"
-        for size in range(pending + 1):
-            for subset in combinations(range(pending), size):
-                yield self.power_failure(k, persisted=subset)
+        """Power failure states before ``k`` that the tests enumerate.
+
+        Every subset of the pending directory operations, each combined with
+        no unsynced data at all, or with part of one file's unsynced tail (its
+        first byte, half of it, or all of it).
+        """
+        disk = self._replay(k)
+        assert len(disk.pending) <= 8, "too many unsynced directory operations to enumerate"
+        tails: list[dict[int, int]] = [{}]
+        for inode, data in disk.contents.items():
+            unsynced = len(data) - disk.synced[inode]
+            if unsynced:
+                tails += [{inode: n} for n in sorted({1, unsynced // 2, unsynced})]
+        for size in range(len(disk.pending) + 1):
+            for subset in combinations(range(len(disk.pending)), size):
+                for tail in tails:
+                    yield disk.state(subset, tail)
+
+    def _replay(self, k: int) -> _Disk:
+        disk = _Disk()
+        for name, data in self.base.items():
+            inode = disk.new_inode(data)
+            disk.synced[inode] = len(data)
+            disk.names[name] = inode
+        disk.durable = dict(disk.names)
+        for op in self.ops[:k]:
+            if op.kind == "create":
+                inode = disk.new_inode(b"")
+                disk.names[op.name] = inode
+                disk.pending.append(("create", op.name, "", inode))
+            elif op.kind == "write":
+                disk.contents[disk.names[op.name]] += op.data
+            elif op.kind == "fsync":
+                inode = disk.names[op.name]
+                disk.synced[inode] = len(disk.contents[inode])
+            elif op.kind == "fsync_dir":
+                disk.durable = dict(disk.names)
+                disk.pending = []
+            elif op.kind == "rename":
+                inode = disk.names.pop(op.name)
+                disk.names[op.target] = inode
+                disk.pending.append(("rename", op.name, op.target, inode))
+            elif op.kind == "remove":
+                disk.pending.append(("remove", op.name, "", disk.names.pop(op.name)))
+            elif op.kind == "truncate":  # fileops.truncate fsyncs
+                inode = disk.names[op.name]
+                disk.contents[inode] = disk.contents[inode][: op.size]
+                disk.synced[inode] = op.size
+        return disk
 
     def write_ops(self, start: int = 0, end: int | None = None) -> list[int]:
         """Indexes of the write operations in ``ops[start:end]``."""
@@ -232,6 +223,39 @@ class Recorder:
     def log_records_before(self, k: int) -> int:
         """Number of complete log records among the first ``k`` operations."""
         return sum(1 for op in self.ops[:k] if op.kind == "write" and op.name.endswith(".log"))
+
+
+class _Disk:
+    """Inodes, their synced lengths, and the live and durable directory."""
+
+    def __init__(self) -> None:
+        self.contents: dict[int, bytes] = {}
+        self.synced: dict[int, int] = {}
+        self.names: dict[str, int] = {}
+        self.durable: dict[str, int] = {}
+        self.pending: list[tuple[str, str, str, int]] = []  # kind, name, target, inode
+
+    def new_inode(self, data: bytes) -> int:
+        inode = len(self.contents)
+        self.contents[inode] = data
+        self.synced[inode] = 0
+        return inode
+
+    def state(self, persisted: Iterable[int], keep: dict[int, int]) -> dict[str, bytes]:
+        durable = dict(self.durable)
+        for position in sorted(persisted):
+            kind, name, target, inode = self.pending[position]
+            if kind == "create":
+                durable[name] = inode
+            elif kind == "rename":
+                durable.pop(name, None)
+                durable[target] = inode
+            else:
+                durable.pop(name, None)
+        return {
+            name: self.contents[inode][: self.synced[inode] + keep.get(inode, 0)]
+            for name, inode in durable.items()
+        }
 
 
 def materialize(files: dict[str, bytes], directory: Path) -> str:

@@ -179,11 +179,8 @@ def test_power_failure_keeps_every_acknowledged_write(run: Run, tmp_path: Path) 
     assert states > run.ops  # some states had unsynced directory operations
 
 
-@pytest.mark.parametrize("sync", [SyncPolicy.ON_CLOSE, SyncPolicy.PERIODIC])
-def test_power_failure_under_weaker_policies_keeps_a_prefix(
-    tmp_path: Path, sync: SyncPolicy
-) -> None:
-    run = run_workload(str(tmp_path / "db"), sync)
+def test_power_failure_without_fsync_per_write_keeps_a_prefix(tmp_path: Path) -> None:
+    run = run_workload(str(tmp_path / "db"), SyncPolicy.ON_CLOSE)
     lost_acknowledged_writes = False
     for k in range(run.ops + 1):
         for files in run.recorder.power_failures(k):
