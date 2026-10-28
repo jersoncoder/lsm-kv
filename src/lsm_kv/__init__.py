@@ -1,5 +1,6 @@
 """lsm-kv: an embedded key-value store built on a log-structured merge tree."""
 
+from .batch import WriteBatch
 from .errors import (
     CorruptionError,
     DBClosedError,
@@ -21,4 +22,5 @@ __all__ = [
     "Options",
     "SyncPolicy",
     "UnsupportedFormatError",
+    "WriteBatch",
 ]
