@@ -16,7 +16,10 @@ A database is a directory:
 | `LOCK` | Empty file locked with `flock` while an instance has the database open. |
 | `MANIFEST.tmp` | Exists only while a new manifest is being written. |
 
-File numbers come from one counter (`next_file_number`) and are never reused.
+File numbers come from one counter (`next_file_number`). On open it is raised
+past every number found in the directory, so a new file never takes the name of
+an existing one (the number of a leftover deleted on open can be handed out
+again later).
 On open, leftovers of an interrupted flush or compaction (`MANIFEST.tmp`,
 tables not in the manifest, logs below `log_number`) are deleted, but only
 after the manifest, every live table and every live log have been verified.

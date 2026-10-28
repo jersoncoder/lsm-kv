@@ -17,8 +17,9 @@ import os
 def create(path: str) -> int:
     """Create a new, empty file for writing and return its descriptor.
 
-    Fails if the file already exists: file numbers are never reused, so an
-    existing file means a bug or a damaged directory, not something to clobber.
+    Fails if the file already exists: the engine never gives a new file the
+    name of an existing one, so a clash means a bug or a damaged directory,
+    not something to clobber.
     """
     return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
 

@@ -7,7 +7,8 @@ Directory contents::
     NNNNNN.log      write-ahead logs
     NNNNNN.sst      tables
 
-File numbers come from one counter and are never reused.
+File numbers come from one counter. On open it is raised past every number
+found in the directory, so a new file never takes the name of an existing one.
 
 Concurrency: every public method takes one re-entrant lock, so an instance may
 be shared between threads, but operations run one at a time. Flushes and
