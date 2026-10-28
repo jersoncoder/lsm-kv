@@ -107,7 +107,7 @@ class DB:
     _lock_fd: int
 
     def __init__(self, path: str | os.PathLike[str], options: Options | None = None):
-        self._path = os.fspath(path)
+        self._path = os.path.abspath(os.fspath(path))
         self._options = options if options is not None else Options()
         self._lock = threading.RLock()
         self._closed = True
@@ -441,9 +441,15 @@ class DB:
         tables = [t for t in self._tables if t not in inputs]
         if output is not None:
             tables.append(output)
-            self._stats.compaction_bytes += output.info.size
         tables.sort(key=lambda t: (t.info.tier, -t.info.max_seq))
-        self._commit(tables, log_number=self._log_number, last_sequence=self._flushed_seq)
+        try:
+            self._commit(tables, log_number=self._log_number, last_sequence=self._flushed_seq)
+        except BaseException:
+            if output is not None:
+                output.reader.close()
+            raise
+        if output is not None:
+            self._stats.compaction_bytes += output.info.size
         self._stats.compactions += 1
         for table in inputs:
             table.obsolete = True
