@@ -558,6 +558,11 @@ class DB:
         self._next_file = max([state.next_file_number, *(n + 1 for n in on_disk)])
 
         try:
+            # A crashed process may have left directory changes (a new log, a
+            # renamed manifest) that no directory fsync covered. Recovery is
+            # about to rely on them: deleting files they make obsolete and
+            # acknowledging writes into that log. Make them durable first.
+            fileops.fsync_dir(path)
             self._clean_up(names, state)
             if live_logs:
                 number, contents = live_logs[-1]

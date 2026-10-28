@@ -59,72 +59,12 @@ _PATCHED = (
 )
 
 
-class Recorder:
-    """Records file operations while used as a context manager."""
+class History:
+    """A base directory state, treated as durable, and operations applied to it."""
 
-    def __init__(self, directory: str):
-        self.directory = os.path.abspath(directory)
-        self.base = {
-            name: Path(self.directory, name).read_bytes() for name in os.listdir(self.directory)
-        }
-        self.ops: list[Op] = []
-        self._names: dict[int, str] = {}
-        self._saved: dict[str, Callable[..., Any]] = {}
-
-    def __enter__(self) -> Self:
-        self._saved = {name: getattr(fileops, name) for name in _PATCHED}
-        real = self._saved
-
-        def name_of(path: str) -> str:
-            assert os.path.dirname(os.path.abspath(path)) == self.directory, path
-            return os.path.basename(path)
-
-        def create(path: str) -> int:
-            fd: int = real["create"](path)
-            self._names[fd] = name_of(path)
-            self.ops.append(Op("create", name_of(path)))
-            return fd
-
-        def open_append(path: str) -> int:
-            fd: int = real["open_append"](path)
-            self._names[fd] = name_of(path)
-            return fd
-
-        def write(fd: int, data: bytes) -> None:
-            real["write"](fd, data)
-            self.ops.append(Op("write", self._names[fd], data=bytes(data)))
-
-        def fsync(fd: int) -> None:
-            self.ops.append(Op("fsync", self._names[fd]))
-
-        def fsync_dir(path: str) -> None:
-            if os.path.abspath(path) == self.directory:
-                self.ops.append(Op("fsync_dir"))
-
-        def rename(src: str, dst: str) -> None:
-            real["rename"](src, dst)
-            self.ops.append(Op("rename", name_of(src), target=name_of(dst)))
-
-        def remove(path: str) -> None:
-            real["remove"](path)
-            self.ops.append(Op("remove", name_of(path)))
-
-        def truncate(path: str, size: int) -> None:
-            real["truncate"](path, size)
-            self.ops.append(Op("truncate", name_of(path), size=size))
-
-        def close(fd: int) -> None:
-            real["close"](fd)
-            self.ops.append(Op("close", self._names.pop(fd)))
-
-        wrappers = [create, open_append, write, fsync, fsync_dir, rename, remove, truncate, close]
-        for name, wrapper in zip(_PATCHED, wrappers, strict=True):
-            setattr(fileops, name, wrapper)
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        for name, function in self._saved.items():
-            setattr(fileops, name, function)
+    def __init__(self, base: dict[str, bytes], ops: list[Op]):
+        self.base = base
+        self.ops = ops
 
     def process_crash(self, k: int, cut: int = 0) -> dict[str, bytes]:
         files = dict(self.base)
@@ -223,6 +163,75 @@ class Recorder:
     def log_records_before(self, k: int) -> int:
         """Number of complete log records among the first ``k`` operations."""
         return sum(1 for op in self.ops[:k] if op.kind == "write" and op.name.endswith(".log"))
+
+
+class Recorder(History):
+    """Records file operations on one directory while used as a context manager.
+
+    The base state is the directory's contents when the recorder is created.
+    """
+
+    def __init__(self, directory: str):
+        self.directory = os.path.abspath(directory)
+        base = {name: Path(self.directory, name).read_bytes() for name in os.listdir(directory)}
+        super().__init__(base, [])
+        self._names: dict[int, str] = {}
+        self._saved: dict[str, Callable[..., Any]] = {}
+
+    def __enter__(self) -> Self:
+        self._saved = {name: getattr(fileops, name) for name in _PATCHED}
+        real = self._saved
+
+        def name_of(path: str) -> str:
+            assert os.path.dirname(os.path.abspath(path)) == self.directory, path
+            return os.path.basename(path)
+
+        def create(path: str) -> int:
+            fd: int = real["create"](path)
+            self._names[fd] = name_of(path)
+            self.ops.append(Op("create", name_of(path)))
+            return fd
+
+        def open_append(path: str) -> int:
+            fd: int = real["open_append"](path)
+            self._names[fd] = name_of(path)
+            return fd
+
+        def write(fd: int, data: bytes) -> None:
+            real["write"](fd, data)
+            self.ops.append(Op("write", self._names[fd], data=bytes(data)))
+
+        def fsync(fd: int) -> None:
+            self.ops.append(Op("fsync", self._names[fd]))
+
+        def fsync_dir(path: str) -> None:
+            if os.path.abspath(path) == self.directory:
+                self.ops.append(Op("fsync_dir"))
+
+        def rename(src: str, dst: str) -> None:
+            real["rename"](src, dst)
+            self.ops.append(Op("rename", name_of(src), target=name_of(dst)))
+
+        def remove(path: str) -> None:
+            real["remove"](path)
+            self.ops.append(Op("remove", name_of(path)))
+
+        def truncate(path: str, size: int) -> None:
+            real["truncate"](path, size)
+            self.ops.append(Op("truncate", name_of(path), size=size))
+
+        def close(fd: int) -> None:
+            real["close"](fd)
+            self.ops.append(Op("close", self._names.pop(fd)))
+
+        wrappers = [create, open_append, write, fsync, fsync_dir, rename, remove, truncate, close]
+        for name, wrapper in zip(_PATCHED, wrappers, strict=True):
+            setattr(fileops, name, wrapper)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        for name, function in self._saved.items():
+            setattr(fileops, name, function)
 
 
 class _Disk:

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from crashsim import Recorder, materialize
+from crashsim import History, Recorder, materialize
 
 from lsm_kv import DB, Options, SyncPolicy, WriteBatch
 
@@ -203,3 +203,24 @@ def test_power_failure_without_fsync_per_write_keeps_a_prefix(tmp_path: Path) ->
         files = run.recorder.power_failure(k, keep={log: extra})
         recovered = recover(run, files, tmp_path / "state")
         assert matching_prefixes(run, recovered, 0, run.written(k)), extra
+
+
+def test_power_failure_after_recovering_from_a_process_crash(run: Run, tmp_path: Path) -> None:
+    """A process crash, a recovery that acknowledges a new write, then a power failure.
+
+    Recovery can find directory changes that the crashed process made but no
+    directory fsync covered, such as a log it had just created. It must make
+    them durable before relying on them: otherwise the power failure can roll
+    them back underneath a write acknowledged after recovery.
+    """
+    for k in range(run.ops + 1):
+        second_dir = tmp_path / "second"
+        materialize(run.recorder.process_crash(k), second_dir)
+        with Recorder(str(second_dir)) as second, DB.open(second_dir, run.options) as db:
+            db.put(b"acked", b"after recovery")
+        history = History(run.recorder.base, run.recorder.ops[:k] + second.ops)
+        for files in history.power_failures(len(history.ops)):
+            recovered = recover(run, files, tmp_path / "state")
+            assert recovered.pop(b"acked", None) == b"after recovery", f"crash before op {k}"
+            # The second session saw these writes before acknowledging its own.
+            assert recovered == run.models[run.written(k)], f"crash before op {k}"
