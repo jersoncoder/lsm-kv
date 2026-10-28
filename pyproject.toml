@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -31,6 +31,9 @@ dev = [
     "ruff==0.17.3",
 ]
 
+[project.scripts]
+lsm-kv = "lsm_kv.__main__:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/lsm_kv"]
 
@@ -44,7 +47,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PT", "RUF", "N"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "bench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
