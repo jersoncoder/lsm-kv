@@ -222,6 +222,15 @@ class TableReader:
     def block_count(self) -> int:
         return len(self._block_offsets)
 
+    def blocks(self) -> list[tuple[str, int, int]]:
+        """Return ``(kind, offset, size)`` for every block and the footer, in file order."""
+        layout = [
+            ("data", o, n) for o, n in zip(self._block_offsets, self._block_sizes, strict=True)
+        ]
+        layout += [(_BLOCK_NAMES[t], o, n) for t, o, n in self._meta_blocks]
+        layout.append(("footer", self._file_size - FOOTER_SIZE, FOOTER_SIZE))
+        return layout
+
     def close(self) -> None:
         if self._fd >= 0:
             os.close(self._fd)
@@ -338,6 +347,11 @@ class TableReader:
         ):
             raise self._corrupt("table footer describes an impossible layout", footer_offset)
 
+        self._meta_blocks = [
+            (BLOCK_FILTER, filter_offset, filter_size),
+            (BLOCK_PROPERTIES, props_offset, props_size),
+            (BLOCK_INDEX, index_offset, index_size),
+        ]
         try:
             self._bloom = BloomFilter.decode(
                 self._read_block(filter_offset, filter_size, BLOCK_FILTER)
