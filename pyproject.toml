@@ -47,7 +47,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PT", "RUF", "N"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src", "tests", "bench"]
+files = ["src", "tests", "bench", "scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -283,3 +283,14 @@ def test_damaged_manifest_stops_open(db_path: str) -> None:
     manifest.write_bytes(original[: len(original) // 2])
     with pytest.raises(CorruptionError, match="manifest"):
         DB.open(db_path, OPTIONS)
+
+
+def test_torn_log_that_is_not_the_newest_stops_open(db_path: str) -> None:
+    # Only the newest log can legitimately end in a torn record: a flush
+    # fsyncs the old log before it creates the next one.
+    make_db(db_path)
+    (log,) = files_of(db_path, ".log")
+    os.truncate(log, os.path.getsize(log) - 3)
+    Path(db_path, "999999.log").write_bytes(b"")
+    with pytest.raises(CorruptionError, match="not the newest"):
+        DB.open(db_path, OPTIONS)
