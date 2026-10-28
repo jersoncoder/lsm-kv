@@ -389,12 +389,12 @@ class DB:
         table = self._write_table(entries, tier=0)
         new_wal: wal.LogWriter | None = None
         try:
-            # The old log must be complete on disk before records go to the new
-            # one, or a power failure could keep later writes and lose earlier ones.
-            self._wal.sync()
+            # The old log needs no fsync: once the manifest below commits, its
+            # records live in the (fsynced) table. The new log's directory entry
+            # is made durable by the manifest commit's directory fsync, before
+            # any record is written to it.
             new_number = self._new_file_number()
             new_wal = wal.LogWriter.create(os.path.join(self._path, log_name(new_number)))
-            fileops.fsync_dir(self._path)
             tables = ([table] if table is not None else []) + self._tables
             self._commit(tables, log_number=new_number, last_sequence=self._last_seq)
         except BaseException:

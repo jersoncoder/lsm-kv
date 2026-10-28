@@ -20,15 +20,18 @@ class SyncPolicy(enum.Enum):
 
     ``PERIODIC``
         The log is fsynced by the first write that happens at least
-        ``Options.sync_interval`` seconds after the previous fsync, and on
-        ``flush``, ``sync`` and ``close``. A power failure can lose the writes
+        ``Options.sync_interval`` seconds after the previous fsync, and by
+        ``sync`` and ``close``. A power failure can lose the writes
         acknowledged since the last fsync. There is no background thread, so if
         writes stop, the tail stays unsynced until the next write, ``sync`` or
         ``close``.
 
     ``ON_CLOSE``
-        The log is fsynced only on ``flush``, ``sync`` and ``close``. A power
-        failure can lose every write since the last of those.
+        The log is fsynced only by ``sync`` and ``close``. A power failure can
+        lose every write since the last of those.
+
+    Under every policy a flush also makes all earlier writes durable, because
+    the table it writes is fsynced before the log it replaces is retired.
 
     Under all three policies the state recovered after a crash is the result of
     a prefix of the acknowledged writes: a batch is applied entirely or not at
