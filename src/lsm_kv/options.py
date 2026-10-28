@@ -31,7 +31,9 @@ class SyncPolicy(enum.Enum):
         lose every write since the last of those.
 
     Under every policy a flush also makes all earlier writes durable: it
-    fsyncs the log it retires and the table that replaces it.
+    fsyncs the log it retires and the table that replaces it. After an I/O
+    error the instance refuses further writes; ``sync`` and ``close`` still
+    fsync the log unless the error came from the log itself.
 
     Under all three policies the state recovered after a crash is the result of
     a prefix of the acknowledged writes: a batch is applied entirely or not at

@@ -112,6 +112,7 @@ class DB:
         self._lock = threading.RLock()
         self._closed = True
         self._failed: BaseException | None = None
+        self._log_failed = False  # the failure came from the log itself
         self._snapshots: dict[int, int] = {}
         self._retired: set[_Table] = set()
         self._stats = Stats()
@@ -147,10 +148,10 @@ class DB:
     def write(self, batch: WriteBatch) -> None:
         """Apply every operation in ``batch`` atomically, in order."""
         ops = list(batch)
-        if not ops:
-            return
         with self._lock:
             self._check_writable()
+            if not ops:
+                return
             if self._mem.approximate_size >= self._options.memtable_size:
                 self._maintenance(self._flush_locked)
             seq = self._last_seq + 1
@@ -160,6 +161,7 @@ class DB:
             except BaseException as exc:
                 # The log may now end in a partial record; appending after it
                 # would turn a torn tail into corruption in the middle.
+                self._log_failed = True
                 self._fail(exc)
                 raise
             mem = self._mem
@@ -223,11 +225,17 @@ class DB:
             self._maintenance(self._compact_all_locked)
 
     def sync(self) -> None:
-        """Fsync the write-ahead log, making every acknowledged write durable."""
+        """Fsync the write-ahead log, making every acknowledged write durable.
+
+        This still works after a failed flush or compaction, but not after an
+        error from the log itself (see :meth:`close`).
+        """
         with self._lock:
-            self._check_writable()
+            self._check_open()
+            if self._log_failed:
+                raise DBFailedError("an earlier error came from the log") from self._failed
             try:
-                self._wal.sync()
+                self._sync_log()
             except BaseException as exc:
                 self._fail(exc)
                 raise
@@ -251,14 +259,21 @@ class DB:
             )
 
     def close(self) -> None:
-        """Fsync the log and release every resource. Calling it twice is harmless."""
+        """Fsync the log and release every resource. Calling it twice is harmless.
+
+        After an error from the log itself (a failed append or fsync), the log
+        is not fsynced again: after a failed fsync the kernel may already have
+        dropped the data, and a second fsync could report success anyway. Under
+        ``PERIODIC`` and ``ON_CLOSE``, writes acknowledged since the last
+        successful fsync may then be lost; the original error reported that.
+        """
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             try:
-                if self._failed is None:
-                    self._wal.sync()
+                if not self._log_failed:
+                    self._sync_log()
             finally:
                 with suppress(OSError):
                     self._wal.close()
@@ -363,6 +378,13 @@ class DB:
             self._fail(exc)
             raise
 
+    def _sync_log(self) -> None:
+        try:
+            self._wal.sync()
+        except BaseException:
+            self._log_failed = True
+            raise
+
     def _sync_after_write(self) -> None:
         policy = self._options.sync
         if policy is SyncPolicy.EVERY_WRITE:
@@ -394,7 +416,7 @@ class DB:
             # the old log a torn log that is not the newest, so sync it first.
             # (The new log's directory entry needs no fsync of its own: the
             # manifest commit fsyncs the directory before any record reaches it.)
-            self._wal.sync()
+            self._sync_log()
             new_number = self._new_file_number()
             new_wal = wal.LogWriter.create(os.path.join(self._path, log_name(new_number)))
             tables = ([table] if table is not None else []) + self._tables

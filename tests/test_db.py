@@ -225,6 +225,8 @@ def test_closed_database_refuses_everything(db_path: str) -> None:
         lambda: db.snapshot(),
         lambda: db.flush(),
         lambda: db.compact(),
+        lambda: db.sync(),
+        lambda: db.write(WriteBatch()),
         lambda: snap.get(b"a"),
         lambda: next(it),
     ):
@@ -318,12 +320,48 @@ def test_io_error_on_write_stops_further_writes(
     monkeypatch.setattr(fileops, "write", real_write)
     with pytest.raises(DBFailedError):
         db.put(b"other", b"3")
+    with pytest.raises(DBFailedError):
+        db.write(WriteBatch())  # even an empty batch reports the state
     assert db.get(b"kept") == b"1"  # reads still work
     assert db.get(b"lost") is None
+    # The log itself failed, so neither sync() nor close() trusts it again.
+    with pytest.raises(DBFailedError):
+        db.sync()
+    fsyncs: list[int] = []
+    monkeypatch.setattr(fileops, "fsync", fsyncs.append)
     db.close()
+    assert fsyncs == []
+    monkeypatch.undo()
     with DB.open(db_path) as db:
         assert db.get(b"kept") == b"1"
         db.put(b"other", b"3")
+
+
+def test_failed_flush_leaves_the_log_usable_for_sync_and_close(
+    db_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = DB.open(db_path, Options(sync=SyncPolicy.ON_CLOSE))
+    data = fill(db, 50)
+    real_create = fileops.create
+
+    def failing_create(path: str) -> int:
+        if path.endswith(".sst"):
+            raise OSError(28, "No space left on device")
+        return real_create(path)
+
+    monkeypatch.setattr(fileops, "create", failing_create)
+    with pytest.raises(OSError, match="No space"):
+        db.flush()
+    with pytest.raises(DBFailedError):
+        db.put(b"x", b"y")
+    fsyncs: list[int] = []
+    monkeypatch.setattr(fileops, "fsync", fsyncs.append)
+    db.sync()  # the acknowledged ON_CLOSE writes can still be made durable
+    db.close()
+    assert len(fsyncs) == 2
+    monkeypatch.undo()
+    with DB.open(db_path) as db:
+        assert dict(db.scan()) == data
 
 
 def test_io_error_during_flush_stops_further_writes(

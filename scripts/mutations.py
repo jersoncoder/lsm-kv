@@ -2,9 +2,9 @@
 
 Each mutation removes one safeguard (an fsync, a directory fsync, a checksum
 check, the torn-tail truncation, ...) from a temporary copy of the package,
-then runs the log, manifest, crash and corruption tests against that copy. Every
-mutation should make them fail; one that survives marks a safeguard the tests
-cannot see. Exits with status 1 if any mutation survives.
+then runs the log, manifest, database, crash and corruption tests against that
+copy. Every mutation should make them fail; one that survives marks a
+safeguard the tests cannot see. Exits with status 1 if any mutation survives.
 
     python scripts/mutations.py
 """
@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TESTS = [
     "tests/test_wal.py",
     "tests/test_manifest.py",
+    "tests/test_db.py",
     "tests/test_crash.py",
     "tests/test_corruption.py",
 ]
@@ -56,7 +57,7 @@ MUTATIONS = [
     (
         "fsync of the old log when a flush switches logs",
         "db.py",
-        "            self._wal.sync()\n            new_number = self._new_file_number()",
+        "            self._sync_log()\n            new_number = self._new_file_number()",
         "            new_number = self._new_file_number()",
     ),
     (
@@ -65,6 +66,18 @@ MUTATIONS = [
         "                self._wal = wal.LogWriter.create(os.path.join(path, log_name(number)))\n"
         "                fileops.fsync_dir(path)",
         "                self._wal = wal.LogWriter.create(os.path.join(path, log_name(number)))",
+    ),
+    (
+        "directory fsync on open before relying on what recovery found",
+        "db.py",
+        "            fileops.fsync_dir(path)\n            self._clean_up(names, state)",
+        "            self._clean_up(names, state)",
+    ),
+    (
+        "log fsync on close after a failure that did not involve the log",
+        "db.py",
+        "                if not self._log_failed:\n                    self._sync_log()",
+        "                if self._failed is None:\n                    self._sync_log()",
     ),
     (
         "fsync of the log under EVERY_WRITE",
