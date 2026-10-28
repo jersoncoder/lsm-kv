@@ -191,11 +191,14 @@ def test_power_failure_without_fsync_per_write_keeps_a_prefix(tmp_path: Path) ->
     # This is the documented cost of not syncing every write.
     assert lost_acknowledged_writes
 
-    # A file system may also have written part of the unsynced log tail.
-    k = run.ops - 1  # just before close fsyncs the log
-    log = max(op.name for op in run.recorder.ops if op.name.endswith(".log"))
+    # A file system may also have written any part of the unsynced log tail.
+    # Crash just before close() fsyncs the log, and try every length of it.
+    ops = run.recorder.ops
+    log = max(op.name for op in ops if op.name.endswith(".log"))
+    k = max(i for i, op in enumerate(ops) if op.kind == "fsync" and op.name == log)
     full = run.recorder.process_crash(k)[log]
     synced = run.recorder.power_failure(k)[log]
+    assert len(full) - len(synced) > 100, "the tail sweep needs unsynced records"
     for extra in range(len(full) - len(synced) + 1):
         files = run.recorder.power_failure(k, keep={log: extra})
         recovered = recover(run, files, tmp_path / "state")
